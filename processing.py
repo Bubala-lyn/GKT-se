@@ -18,31 +18,28 @@ transform = transforms.Compose([
 ])
 
 class KTDataset(Dataset):
-    def __init__(self, features, questions, answers, problemids):
+    def __init__(self, features, questions, answers):
         super(KTDataset, self).__init__()
         self.features = features
         self.questions = questions
         self.answers = answers
-        self.problemids = problemids
 
     def __getitem__(self, index):
-        return self.features[index], self.questions[index], self.answers[index], self.problemids[index]
+        return self.features[index], self.questions[index], self.answers[index]
 
     def __len__(self):
         return len(self.features)
 
 
 def pad_collate(batch):
-    (features, questions, answers, problemids) = zip(*batch)
+    (features, questions, answers) = zip(*batch)
     features = [torch.FloatTensor(feat) for feat in features]
     questions = [torch.LongTensor(qt) for qt in questions]
     answers = [torch.FloatTensor(ans) for ans in answers]
-    problemids = [torch.LongTensor(problemid) for problemid in problemids]
     feature_pad = pad_sequence(features, batch_first=True, padding_value=-1.0)
     question_pad = pad_sequence(questions, batch_first=True, padding_value=-1.0)
     answer_pad = pad_sequence(answers, batch_first=True, padding_value=-1.0)
-    problemid_pad = pad_sequence(problemids, batch_first=True, padding_value=-1.0)
-    return feature_pad, question_pad, answer_pad, problemid_pad
+    return feature_pad, question_pad, answer_pad
 
 
 def load_dkt_dataset(file_path, kc_id_path, qt_kc_path, batch_size, graph_type, dkt_graph_path=None,
@@ -100,17 +97,14 @@ def load_dkt_dataset(file_path, kc_id_path, qt_kc_path, batch_size, graph_type, 
     question_list = []
     answer_list = []
     seq_len_list = []
-    problemid_list = []
     kc_id = []
     #feature 问答情况答对打错
     #question 答题skill 号
     #answer
     def get_data(series):
-        print(series['Score'])
         feature_list.append(series['Score'].astype(float).tolist())
         question_list.append(series['skill'].tolist())
         answer_list.append(series['correct'].eq(1).astype('int').tolist())
-        problemid_list.append(series['ProblemID'].tolist())
         seq_len_list.append(series['correct'].shape[0])
     df.groupby('SubjectID').apply(get_data)
     max_seq_len = np.max(seq_len_list)
@@ -125,7 +119,7 @@ def load_dkt_dataset(file_path, kc_id_path, qt_kc_path, batch_size, graph_type, 
     # print('feature_dim:', feature_dim, 'res_len*question_dim:', res_len*question_dim)
     # assert feature_dim == res_len * question_dim
 
-    kt_dataset = KTDataset(feature_list, question_list, answer_list, problemid_list)
+    kt_dataset = KTDataset(feature_list, question_list, answer_list)
     train_size = int(train_ratio * student_num)
     val_size = int(val_ratio * student_num)
     test_size = student_num - train_size - val_size

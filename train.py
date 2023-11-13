@@ -187,17 +187,13 @@ def train(epoch, best_val_loss):
     if graph_model is not None:
         graph_model.train()
     model.train()
-    for batch_idx, (features, questions, answers, problemids) in enumerate(train_loader):
+    for batch_idx, (features, questions, answers) in enumerate(train_loader):
         t1 = time.time()
         if args.cuda:
-            features, questions, answers, problemids = features.cuda(), questions.cuda(), answers.cuda(), problemids.cuda()
-            check_id = 59
-            is_value_in_tensor = torch.any(problemids == check_id)
-            if is_value_in_tensor:
-                print(True)
+            features, questions, answers = features.cuda(), questions.cuda(), answers.cuda()
         ec_list, rec_list, z_prob_list = None, None, None
         if args.model == 'GKT':
-            pred_res, ec_list, rec_list, z_prob_list = model(features, questions, problemids)
+            pred_res, ec_list, rec_list, z_prob_list = model(features, questions)
         elif args.model == 'DKT':
             pred_res = model(features, questions)
         else:

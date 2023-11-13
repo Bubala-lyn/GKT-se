@@ -25,7 +25,13 @@ class GKT(nn.Module):
         self.edge_type_num = edge_type_num
         self.res_len = 2 if binary else 12
         self.has_cuda = has_cuda
-        self.qt_kc_one_hot = qt_one_hot_matrix
+        self.qt_kc_one_hot = qt_one_hot_matrix.values
+        if self.has_cuda:
+            self.qt_kc_one_hot = torch.from_numpy(self.qt_kc_one_hot).cuda()
+        else:
+            self.qt_kc_one_hot = torch.from_numpy(self.qt_kc_one_hot)
+        zero_padding = torch.zeros(1, self.concept_num, device=self.qt_kc_one_hot.device)
+        self.qt_kc_one_hot = torch.cat((self.qt_kc_one_hot, zero_padding), dim=0)
 
         assert graph_type in ['Dense', 'Transition', 'DKT', 'PAM', 'MHA', 'VAE']
         self.graph_type = graph_type
@@ -47,8 +53,8 @@ class GKT(nn.Module):
 
         # one-hot feature and question
         one_hot_feat = torch.eye(self.concept_num)
-
         self.one_hot_feat = one_hot_feat.cuda() if self.has_cuda else one_hot_feat
+
         # self.one_hot_q = torch.eye(self.concept_num, device=self.one_hot_feat.device)
         # zero_padding = torch.zeros(1, self.concept_num, device=self.one_hot_feat.device)
         # self.one_hot_q = torch.cat((self.one_hot_q, zero_padding), dim=0)
@@ -77,7 +83,7 @@ class GKT(nn.Module):
         self.predict = nn.Linear(hidden_dim, 1, bias=bias)
 
     # Aggregate step, as shown in Section 3.2.1 of the paper
-    def _aggregate(self, xt, qt, ht, problem_id, batch_size):
+    def _aggregate(self, xt, qt, ht):
         r"""
         Parameters:
             xt: input one-hot question answering features at the current timestamp
@@ -93,26 +99,16 @@ class GKT(nn.Module):
             tmp_ht: aggregation results of concept hidden knowledge state and concept(& response) embedding
         """
         qt_mask = torch.ne(qt, -1)  # [batch_size], qt != -1
-        problem_id = torch.where(problem_id != -1, problem_id, 1 * torch.ones_like(problem_id, device=problem_id.device))
+        qt = torch.where(qt != -1, qt, qt.shape[0] * torch.ones_like(qt, device=qt.device))
 
         # 拼接qc_one-hot矩阵
-        qt_id = problem_id[0]
-        qt_id = float(qt_id)
-        qt_kc_vector = self.qt_kc_one_hot.loc[qt_id].to_numpy()
-        qt_kc_onehot = torch.from_numpy(qt_kc_vector).unsqueeze(0).cuda() if self.has_cuda else torch.from_numpy(qt_kc_vector).unsqueeze(0)
-        count = 0
-        for qt_id in problem_id[1:]:
-            count = count + 1
-            qt_id = float(qt_id)
-            qt_kc_vector = self.qt_kc_one_hot.loc[qt_id].to_numpy()
-            qt_kc_vector = torch.from_numpy(qt_kc_vector).unsqueeze(0).cuda() if self.has_cuda else torch.from_numpy(qt_kc_vector).unsqueeze(0)
-            qt_kc_onehot = torch.cat((qt_kc_onehot, qt_kc_vector), dim=0)
-
         # 补齐批次
         x_idx_mat = torch.arange(self.concept_num, device=xt.device)
         x_embedding = self.emb_x(x_idx_mat)  # [res_len * concept_num, embedding_dim]
         #
-        masked_feat = F.embedding(qt[qt_mask], self.one_hot_feat)  # [mask_num, res_len * concept_num]
+        masked_feat = F.embedding(qt[qt_mask], self.qt_kc_one_hot.long())  # [mask_num, res_len * concept_num]
+
+        # 是否需要
         xt = xt[qt_mask]
         xt_ = xt.reshape(-1, 1)
         temp = masked_feat * xt_
@@ -120,16 +116,11 @@ class GKT(nn.Module):
         res_embedding = temp.mm(x_embedding)  # [mask_num, embedding_dim]
         # [4,600] * [600*32]
         mask_num = res_embedding.shape[0]
-        if self.has_cuda:
-            concept_idx_mat = qt_kc_onehot.long().cuda()
-        else:
-            concept_idx_mat = qt_kc_onehot.long()
 
+        concept_idx_mat = F.embedding(qt, self.qt_kc_one_hot.long())
         # concept_idx_mat[qt_mask, :] = torch.arange(self.concept_num, device=xt.device)
-        qc_vector = self.emb_c(concept_idx_mat) #[50,32] # [batch_size, concept_num, embedding_dim]
-
+        qc_vector = self.emb_c(concept_idx_mat) #[51, 59,32] # [batch_size, concept_num, embedding_dim]
         index_tuple = (torch.arange(mask_num, device=xt.device), qt[qt_mask].long())
-
         qc_vector[qt_mask] = qc_vector[qt_mask].index_put(index_tuple, res_embedding)
         tmp_ht = torch.cat((ht, qc_vector), dim=-1)  # [batch_size, concept_num, hidden_dim + embedding_dim]
         return tmp_ht
@@ -294,16 +285,10 @@ class GKT(nn.Module):
         """
         next_qt = q_next
         next_qt = torch.where(next_qt != -1, next_qt, 50 * torch.ones_like(next_qt, device=yt.device))
-
-
-        qt_kc_one_hot = torch.from_numpy(self.qt_kc_one_hot.values).cuda()
-        zero_padding = torch.zeros(1, self.concept_num, device=qt_kc_one_hot.device)
-        qt_kc_one_hot = torch.cat((qt_kc_one_hot, zero_padding), dim=0)
-
-        print(next_qt)
-        one_hot_qt = F.embedding(next_qt.long(), qt_kc_one_hot)
+        one_hot_qt = F.embedding(next_qt.long(), self.qt_kc_one_hot.long())
         # dot product between yt and one_hot_qt
-        pred = (yt * one_hot_qt).sum(dim=1)  # [batch_size, ]
+        # pred = (yt * one_hot_qt).sum(dim=1)  # [batch_size, ]
+        pred = torch.topk((yt * one_hot_qt), k=1, dim=1).values.squeeze()
         return pred
 
     # Get edges for edge inference in VAE
@@ -346,7 +331,7 @@ class GKT(nn.Module):
         sp_rec_t = sp_rec_t.to(device=masked_qt.device)
         return sp_send, sp_rec, sp_send_t, sp_rec_t
 
-    def forward(self, features, questions, problemids):
+    def forward(self, features, questions):
         r"""
         Parameters:
             features: input one-hot matrix
@@ -371,10 +356,8 @@ class GKT(nn.Module):
         for i in range(seq_len):
             xt = features[:, i]  # [batch_size]
             qt = questions[:, i]  # [batch_size]
-            problem_id = problemids[:, i]
-
             qt_mask = torch.ne(qt, -1)  # [batch_size], next_qt != -1
-            tmp_ht = self._aggregate(xt, qt, ht, problem_id, batch_size)  # [batch_size, concept_num, hidden_dim + embedding_dim]
+            tmp_ht = self._aggregate(xt, qt, ht)  # [batch_size, concept_num, hidden_dim + embedding_dim]
             h_next, concept_embedding, rec_embedding, z_prob = self._update(tmp_ht, ht, qt)  # [batch_size, concept_num, hidden_dim]
             ht[qt_mask] = h_next[qt_mask]  # update new ht
             yt = self._predict(h_next, qt)  # [batch_size, concept_num]
