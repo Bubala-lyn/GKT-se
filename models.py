@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torch.autograd import Variable
-from layers import MLP, EraseAddGate, MLPEncoder, MLPDecoder, ScaledDotProductAttention
+from layers import MLP, EraseAddGate, MLPEncoder, MLPDecoder
 from utils import gumbel_softmax
 
 # Graph-based Knowledge Tracing: Modeling Student Proficiency Using Graph Neural Network.
@@ -17,7 +17,7 @@ from utils import gumbel_softmax
 
 class GKT(nn.Module):
 
-    def __init__(self, concept_num, hidden_dim, embedding_dim, edge_type_num, graph_type, qt_one_hot_matrix, graph=None, graph_model=None, dropout=0.5, bias=True, binary=False, has_cuda=False):
+    def __init__(self, concept_num, hidden_dim, embedding_dim, edge_type_num, qt_one_hot_matrix, graph_model=None, dropout=0.5, bias=True, binary=False, has_cuda=False):
         super(GKT, self).__init__()
         self.concept_num = concept_num
         self.hidden_dim = hidden_dim
@@ -32,24 +32,7 @@ class GKT(nn.Module):
             self.qt_kc_one_hot = torch.from_numpy(self.qt_kc_one_hot)
         zero_padding = torch.zeros(1, self.concept_num, device=self.qt_kc_one_hot.device)
         self.qt_kc_one_hot = torch.cat((self.qt_kc_one_hot, zero_padding), dim=0)
-
-        assert graph_type in ['Dense', 'Transition', 'DKT', 'PAM', 'MHA', 'VAE']
-        self.graph_type = graph_type
-        if graph_type in ['Dense', 'Transition', 'DKT']:
-            assert edge_type_num == 2
-            assert graph is not None and graph_model is None
-            self.graph = nn.Parameter(graph)  # [concept_num, concept_num]
-            self.graph.requires_grad = False  # fix parameter
-            self.graph_model = graph_model
-        else:  # ['PAM', 'MHA', 'VAE']
-            assert graph is None
-            self.graph = graph  # None
-            if graph_type == 'PAM':
-                assert graph_model is None
-                self.graph = nn.Parameter(torch.rand(concept_num, concept_num))
-            else:
-                assert graph_model is not None
-            self.graph_model = graph_model
+        self.graph_model = graph_model
 
         # one-hot feature and question
         one_hot_feat = torch.eye(self.concept_num)
@@ -67,13 +50,9 @@ class GKT(nn.Module):
         mlp_input_dim = hidden_dim + embedding_dim
         self.f_self = MLP(mlp_input_dim, hidden_dim, hidden_dim, dropout=dropout, bias=bias)
         self.f_neighbor_list = nn.ModuleList()
-        if graph_type in ['Dense', 'Transition', 'DKT', 'PAM']:
-            # f_in and f_out functions
+
+        for i in range(edge_type_num):
             self.f_neighbor_list.append(MLP(2 * mlp_input_dim, hidden_dim, hidden_dim, dropout=dropout, bias=bias))
-            self.f_neighbor_list.append(MLP(2 * mlp_input_dim, hidden_dim, hidden_dim, dropout=dropout, bias=bias))
-        else:  # ['MHA', 'VAE']
-            for i in range(edge_type_num):
-                self.f_neighbor_list.append(MLP(2 * mlp_input_dim, hidden_dim, hidden_dim, dropout=dropout, bias=bias))
 
         # Erase & Add Gate
         self.erase_add_gate = EraseAddGate(hidden_dim, concept_num)
@@ -183,34 +162,18 @@ class GKT(nn.Module):
         neigh_ht = torch.cat((expanded_self_ht, masked_tmp_ht), dim=-1)  #[mask_num, concept_num, 2 * (hidden_dim + embedding_dim)]
         concept_embedding, rec_embedding, z_prob = None, None, None
 
-        if self.graph_type in ['Dense', 'Transition', 'DKT', 'PAM']:
-            adj = self.graph[masked_qt.long(), :].unsqueeze(dim=-1)  # [mask_num, concept_num, 1]
-            reverse_adj = self.graph[:, masked_qt.long()].transpose(0, 1).unsqueeze(dim=-1)  # [mask_num, concept_num, 1]
-            # self.f_neighbor_list[0](neigh_ht) shape: [mask_num, concept_num, hidden_dim]
-            neigh_features = adj * self.f_neighbor_list[0](neigh_ht) + reverse_adj * self.f_neighbor_list[1](neigh_ht)
-        else:  # ['MHA', 'VAE']
-            concept_index = torch.arange(self.concept_num, device=qt.device)
-            concept_embedding = self.emb_c(concept_index)  # [concept_num, embedding_dim]
-            if self.graph_type == 'MHA':
-                query = self.emb_c(masked_qt)
-                key = concept_embedding
-                att_mask = Variable(torch.ones(self.edge_type_num, mask_num, self.concept_num, device=qt.device))
-                for k in range(self.edge_type_num):
-                    index_tuple = (torch.arange(mask_num, device=qt.device), masked_qt.long())
-                    att_mask[k] = att_mask[k].index_put(index_tuple, torch.zeros(mask_num, device=qt.device))
-                graphs = self.graph_model(masked_qt, query, key, att_mask)
-            else:  # self.graph_type == 'VAE'
-                sp_send, sp_rec, sp_send_t, sp_rec_t = self._get_edges(masked_qt)
-                graphs, rec_embedding, z_prob = self.graph_model(concept_embedding, sp_send, sp_rec, sp_send_t, sp_rec_t)
-            neigh_features = 0
-            for k in range(self.edge_type_num):
-                adj = graphs[k][masked_qt, :].unsqueeze(dim=-1)  # [mask_num, concept_num, 1]
-                if k == 0:
-                    neigh_features = adj * self.f_neighbor_list[k](neigh_ht)
-                else:
-                    neigh_features = neigh_features + adj * self.f_neighbor_list[k](neigh_ht)
-            if self.graph_type == 'MHA':
-                neigh_features = 1. / self.edge_type_num * neigh_features
+        concept_index = torch.arange(self.concept_num, device=qt.device)
+        concept_embedding = self.emb_c(concept_index)  # [concept_num, embedding_dim]
+        sp_send, sp_rec, sp_send_t, sp_rec_t = self._get_edges(masked_qt)
+        graphs, rec_embedding, z_prob = self.graph_model(concept_embedding, sp_send, sp_rec, sp_send_t, sp_rec_t)
+        neigh_features = 0
+        for k in range(self.edge_type_num):
+            adj = graphs[k][masked_qt, :].unsqueeze(dim=-1)  # [mask_num, concept_num, 1]
+            if k == 0:
+                neigh_features = adj * self.f_neighbor_list[k](neigh_ht)
+            else:
+                neigh_features = neigh_features + adj * self.f_neighbor_list[k](neigh_ht)
+
         # neigh_features: [mask_num, concept_num, hidden_dim]
         m_next = tmp_ht[:, :, :self.hidden_dim]
         m_next[qt_mask] = neigh_features
@@ -371,74 +334,6 @@ class GKT(nn.Module):
         return pred_res, ec_list, rec_list, z_prob_list
 
 
-class MultiHeadAttention(nn.Module):
-    """
-    Multi-Head Attention module
-    NOTE: Stole and modify from https://github.com/jadore801120/attention-is-all-you-need-pytorch/blob/master/transformer/SubLayers.py
-    """
-
-    def __init__(self, n_head, concept_num, input_dim, d_k, dropout=0.):
-        super(MultiHeadAttention, self).__init__()
-        self.n_head = n_head
-        self.concept_num = concept_num
-        self.d_k = d_k
-        self.w_qs = nn.Linear(input_dim, n_head * d_k, bias=False)
-        self.w_ks = nn.Linear(input_dim, n_head * d_k, bias=False)
-        self.attention = ScaledDotProductAttention(temperature=d_k ** 0.5, attn_dropout=dropout)
-        # inferred latent graph, used for saving and visualization
-        self.graphs = nn.Parameter(torch.zeros(n_head, concept_num, concept_num))
-        self.graphs.requires_grad = False
-
-    def _get_graph(self, attn_score, qt):
-        r"""
-        Parameters:
-            attn_score: attention score of all queries
-            qt: masked question index
-        Shape:
-            attn_score: [n_head, mask_num, concept_num]
-            qt: [mask_num]
-        Return:
-            graphs: n_head types of inferred graphs
-        """
-        graphs = Variable(torch.zeros(self.n_head, self.concept_num, self.concept_num, device=qt.device))
-        for k in range(self.n_head):
-            index_tuple = (qt.long(), )
-            graphs[k] = graphs[k].index_put(index_tuple, attn_score[k])  # used for calculation
-            #############################
-            # here, we need to detach edges when storing it into self.graphs in case memory leak!
-            self.graphs.data[k] = self.graphs.data[k].index_put(index_tuple, attn_score[k].detach())  # used for saving and visualization
-            #############################
-        return graphs
-
-    def forward(self, qt, query, key, mask=None):
-        r"""
-        Parameters:
-            qt: masked question index
-            query: answered concept embedding for a student batch
-            key: concept embedding matrix
-            mask: mask matrix
-        Shape:
-            qt: [mask_num]
-            query: [mask_num, embedding_dim]
-            key: [concept_num, embedding_dim]
-        Return:
-            graphs: n_head types of inferred graphs
-        """
-        d_k, n_head = self.d_k, self.n_head
-        len_q, len_k = query.size(0), key.size(0)
-
-        # Pass through the pre-attention projection: lq x (n_head *dk)
-        # Separate different heads: lq x n_head x dk
-        q = self.w_qs(query).view(len_q, n_head, d_k)
-        k = self.w_ks(key).view(len_k, n_head, d_k)
-
-        # Transpose for attention dot product: n_head x lq x dk
-        q, k = q.transpose(0, 1), k.transpose(0, 1)
-        attn_score = self.attention(q, k, mask=mask)  # [n_head, mask_num, concept_num]
-        graphs = self._get_graph(attn_score, qt)
-        return graphs
-
-
 class VAE(nn.Module):
 
     def __init__(self, input_dim, hidden_dim, output_dim, msg_hidden_dim, msg_output_dim, concept_num, edge_type_num=2,
@@ -503,77 +398,3 @@ class VAE(nn.Module):
         output = self.decoder(data, edges, sp_send, sp_rec, sp_send_t, sp_rec_t)  # [concept_num, embedding_dim]
         graphs = self._get_graph(edges, sp_send, sp_rec)
         return graphs, output, prob
-
-
-class DKT(nn.Module):
-
-    def __init__(self, feature_dim, hidden_dim, output_dim, dropout=0., bias=True):
-        super(DKT, self).__init__()
-        self.feature_dim = feature_dim
-        self.hidden_dim = hidden_dim
-        self.output_dim = output_dim
-        self.bias = bias
-        self.rnn = nn.LSTM(feature_dim, hidden_dim, bias=bias, dropout=dropout, batch_first=True)
-        self.f_out = nn.Linear(hidden_dim, output_dim, bias=bias)
-        self.init_weights()
-
-    def init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_normal_(m.weight.data)
-            elif isinstance(m, (nn.LSTM)):
-                for i, weight in enumerate(m.parameters()):
-                    if i < 2:
-                        nn.init.orthogonal_(weight)
-
-    def _get_next_pred(self, yt, questions):
-        r"""
-        Parameters:
-            y: predicted correct probability of all concepts at the next timestamp
-            questions: question index matrix
-        Shape:
-            y: [batch_size, seq_len - 1, output_dim]
-            questions: [batch_size, seq_len]
-            pred: [batch_size, ]
-        Return:
-            pred: predicted correct probability of the question answered at the next timestamp
-        """
-        one_hot = torch.eye(self.output_dim, device=yt.device)
-        one_hot = torch.cat((one_hot, torch.zeros(1, self.output_dim, device=yt.device)), dim=0)
-        next_qt = questions[:, 1:]
-        next_qt = torch.where(next_qt != -1, next_qt, self.output_dim * torch.ones_like(next_qt, device=yt.device))  # [batch_size, seq_len - 1]
-        one_hot_qt = F.embedding(next_qt, one_hot)  # [batch_size, seq_len - 1, output_dim]
-        # dot product between yt and one_hot_qt
-        pred = (yt * one_hot_qt).sum(dim=-1)  # [batch_size, seq_len - 1]
-        return pred
-
-    def forward(self, features, questions):
-        r"""
-        Parameters:
-            features: input one-hot matrix
-            questions: question index matrix
-        seq_len dimension needs padding, because different students may have learning sequences with different lengths.
-        Shape:
-            features: [batch_size, seq_len]
-            questions: [batch_size, seq_len]
-            pred_res: [batch_size, seq_len - 1]
-        Return:
-            pred_res: the correct probability of questions answered at the next timestamp
-            concept_embedding: input of VAE (optional)
-            rec_embedding: reconstructed input of VAE (optional)
-            z_prob: probability distribution of latent variable z in VAE (optional)
-        """
-        feat_one_hot = torch.eye(self.feature_dim, device=features.device)
-        feat_one_hot = torch.cat((feat_one_hot, torch.zeros(1, self.feature_dim, device=features.device)), dim=0)
-        feat = torch.where(features != -1, features, self.feature_dim * torch.ones_like(features, device=features.device))
-        features = F.embedding(feat, feat_one_hot)
-
-        feature_lens = torch.ne(questions, -1).sum(dim=1)  # padding value = -1
-        x_packed = pack_padded_sequence(features, feature_lens, batch_first=True, enforce_sorted=False)
-        output_packed, _ = self.rnn(x_packed)  # [batch, seq_len, hidden_dim]
-        output_padded, output_lengths = pad_packed_sequence(output_packed, batch_first=True)  # [batch, seq_len, hidden_dim]
-        yt = self.f_out(output_padded)  # [batch, seq_len, output_dim]
-        yt = torch.sigmoid(yt)
-        yt = yt[:, :-1, :]  # [batch, seq_len - 1, output_dim]
-        pred_res = self._get_next_pred(yt, questions)  # [batch, seq_len - 1]
-        return pred_res

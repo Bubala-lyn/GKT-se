@@ -5,7 +5,6 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, TensorDataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
-from utils import build_dense_graph
 import torchvision.transforms as transforms
 
 # Graph-based Knowledge Tracing: Modeling Student Proficiency Using Graph Neural Network.
@@ -42,14 +41,12 @@ def pad_collate(batch):
     return feature_pad, question_pad, answer_pad
 
 
-def load_dkt_dataset(file_path, kc_id_path, qt_kc_path, batch_size, graph_type, dkt_graph_path=None,
-                     train_ratio=0.7, val_ratio=0.2, shuffle=True, model_type='GKT',
-                     use_binary=True, res_len=2, use_cuda=True):
+def load_dkt_dataset(file_path, kc_id_path, qt_kc_path, batch_size,
+                     train_ratio=0.7, val_ratio=0.2, shuffle=True):
     r"""
     Parameters:
         file_path: input file path of knowledge tracing data
         batch_size: the size of a student batch
-        graph_type: the type of the concept graph
         shuffle: whether to shuffle the dataset or not
         use_cuda: whether to use GPU to accelerate training speed
     Return:
@@ -97,8 +94,7 @@ def load_dkt_dataset(file_path, kc_id_path, qt_kc_path, batch_size, graph_type, 
     question_list = []
     answer_list = []
     seq_len_list = []
-    kc_id = []
-    #feature 问答情况答对打错
+    #feature 问答情况答对答错
     #question 答题skill 号
     #answer
     def get_data(series):
@@ -129,49 +125,5 @@ def load_dkt_dataset(file_path, kc_id_path, qt_kc_path, batch_size, graph_type, 
     train_data_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=pad_collate)
     valid_data_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=pad_collate)
     test_data_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=pad_collate)
+    return concept_num, train_data_loader, valid_data_loader, test_data_loader, one_hot_matrix
 
-    graph = None
-    if model_type == 'GKT':
-        if graph_type == 'Dense':
-            graph = build_dense_graph(concept_num)
-        elif graph_type == 'Transition':
-            graph = build_transition_graph(question_list, seq_len_list, train_dataset.indices, student_num, concept_num)
-        elif graph_type == 'DKT':
-            graph = build_dkt_graph(dkt_graph_path, concept_num)
-        if use_cuda and graph_type in ['Dense', 'Transition', 'DKT']:
-            graph = graph.cuda()
-    return concept_num, graph, train_data_loader, valid_data_loader, test_data_loader, one_hot_matrix
-
-def build_transition_graph(question_list, seq_len_list, indices, student_num, concept_num):
-    graph = np.zeros((concept_num, concept_num))
-    student_dict = dict(zip(indices, np.arange(student_num)))
-    for i in range(student_num):
-        if i not in student_dict:
-            continue
-        questions = question_list[i]
-        seq_len = seq_len_list[i]
-        for j in range(seq_len - 1):
-            pre = questions[j]
-            next = questions[j + 1]
-            graph[pre, next] += 1
-    np.fill_diagonal(graph, 0)
-    # row normalization
-    rowsum = np.array(graph.sum(1))
-    def inv(x):
-        if x == 0:
-            return x
-        return 1. / x
-    inv_func = np.vectorize(inv)
-    r_inv = inv_func(rowsum).flatten()
-    r_mat_inv = np.diag(r_inv)
-    graph = r_mat_inv.dot(graph)
-    # covert to tensor
-    graph = torch.from_numpy(graph).float()
-    return graph
-
-
-def build_dkt_graph(file_path, concept_num):
-    graph = np.loadtxt(file_path)
-    assert graph.shape[0] == concept_num and graph.shape[1] == concept_num
-    graph = torch.from_numpy(graph).float()
-    return graph
