@@ -98,42 +98,12 @@ class GKT(nn.Module):
 
         concept_idx_mat = F.embedding(qt, self.qt_kc_one_hot.long())
         # concept_idx_mat[qt_mask, :] = torch.arange(self.concept_num, device=xt.device)
-        qc_vector = self.emb_c(concept_idx_mat) #[51, 59,32] # [batch_size, concept_num, embedding_dim]
+        qc_vector = self.emb_c(concept_idx_mat) #[51, 59, 32] # [batch_size, concept_num, embedding_dim]
         index_tuple = (torch.arange(mask_num, device=xt.device), qt[qt_mask].long())
         qc_vector[qt_mask] = qc_vector[qt_mask].index_put(index_tuple, res_embedding)
         tmp_ht = torch.cat((ht, qc_vector), dim=-1)  # [batch_size, concept_num, hidden_dim + embedding_dim]
         return tmp_ht
 
-    def _aggregate_copy(self, xt, qt, ht, batch_size):
-        r"""
-        Parameters:
-            xt: input one-hot question answering features at the current timestamp
-            qt: question indices for all students in a batch at the current timestamp
-            ht: hidden representations of all concepts at the current timestamp
-            batch_size: the size of a student batch
-        Shape:
-            xt: [batch_size]
-            qt: [batch_size]
-            ht: [batch_size, concept_num, hidden_dim]
-            tmp_ht: [batch_size, concept_num, hidden_dim + embedding_dim]
-        Return:
-            tmp_ht: aggregation results of concept hidden knowledge state and concept(& response) embedding
-        """
-        qt_mask = torch.ne(qt, -1)  # [batch_size], qt != -1
-        x_idx_mat = torch.arange(self.res_len * self.concept_num, device=xt.device)
-        x_embedding = self.emb_x(x_idx_mat)  # [res_len * concept_num, embedding_dim]
-        masked_feat = F.embedding(xt[qt_mask], self.one_hot_feat)  # [mask_num, res_len * concept_num]
-        res_embedding = masked_feat.mm(x_embedding)  # [mask_num, embedding_dim]
-        mask_num = res_embedding.shape[0]
-
-        concept_idx_mat = self.concept_num * torch.ones((batch_size, self.concept_num), device=xt.device).long()
-        concept_idx_mat[qt_mask, :] = torch.arange(self.concept_num, device=xt.device)
-        concept_embedding = self.emb_c(concept_idx_mat)  # [batch_size, concept_num, embedding_dim]
-
-        index_tuple = (torch.arange(mask_num, device=xt.device), qt[qt_mask].long())
-        concept_embedding[qt_mask] = concept_embedding[qt_mask].index_put(index_tuple, res_embedding)
-        tmp_ht = torch.cat((ht, concept_embedding), dim=-1)  # [batch_size, concept_num, hidden_dim + embedding_dim]
-        return tmp_ht
 
     # GNN aggregation step, as shown in 3.3.2 Equation 1 of the paper
     def _agg_neighbors(self, tmp_ht, qt):
@@ -267,7 +237,14 @@ class GKT(nn.Module):
             rel_send: from nodes in edges which send messages to other nodes
             rel_rec:  to nodes in edges which receive messages from other nodes
         """
-        mask_num = masked_qt.shape[0]
+        result = []
+        # mask_num = masked_qt.shape[0]
+        mask_qt_kc = self.qt_kc_one_hot[masked_qt]
+        kc_id = torch.arange(self.concept_num).cuda()
+        mask_qt_kc_score = mask_qt_kc * kc_id
+        masked_qt = mask_qt_kc_score[mask_qt_kc_score != 0]
+        mask_num = torch.count_nonzero(masked_qt).item()
+
         row_arr = masked_qt.cpu().numpy().reshape(-1, 1)  # [mask_num, 1]
         row_arr = np.repeat(row_arr, self.concept_num, axis=1)  # [mask_num, concept_num]
         col_arr = np.arange(self.concept_num).reshape(1, -1)  # [1, concept_num]
