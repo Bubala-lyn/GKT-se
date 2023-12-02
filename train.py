@@ -43,13 +43,13 @@ parser.add_argument('--hard', action='store_true', default=False, help='Uses dis
 parser.add_argument('--no-factor', action='store_true', default=False, help='Disables factor graph model.')
 parser.add_argument('--prior', action='store_true', default=False, help='Whether to use sparsity prior.')
 parser.add_argument('--var', type=float, default=1, help='Output variance.')
-parser.add_argument('--epochs', type=int, default=50, help='Number of epochs to train.')
+parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train.')
 parser.add_argument('--batch-size', type=int, default=16, help='Number of samples per batch.')
 parser.add_argument('--train-ratio', type=float, default=0.6, help='The ratio of training samples in a dataset.')
 parser.add_argument('--val-ratio', type=float, default=0.2, help='The ratio of validation samples in a dataset.')
 parser.add_argument('--shuffle', type=bool, default=True, help='Whether to shuffle the dataset or not.')
 parser.add_argument('--lr', type=float, default=0.001, help='Initial learning rate.')
-parser.add_argument('--lr-decay', type=int, default=200, help='After how epochs to decay LR by a factor of gamma.')
+parser.add_argument('--lr-decay', type=int, default=50, help='After how epochs to decay LR by a factor of gamma.')
 parser.add_argument('--gamma', type=float, default=0.5, help='LR decay factor.')
 parser.add_argument('--test', type=bool, default=False, help='Whether to test for existed model.')
 parser.add_argument('--test-model-dir', type=str, default='logs/expDKT', help='Existed model file dir.')
@@ -162,6 +162,7 @@ def train(epoch, best_val_loss):
         graph_model.train()
     model.train()
     for batch_idx, (features, questions, answers) in enumerate(train_loader):
+        optimizer.zero_grad()
         t1 = time.time()
         if args.cuda:
             features, questions, answers = features.cuda(), questions.cuda(), answers.cuda()
@@ -183,8 +184,8 @@ def train(epoch, best_val_loss):
         loss.backward()
         optimizer.step()
         scheduler.step()
-        optimizer.zero_grad()
         del loss
+        torch.cuda.empty_cache()
         print('cost time: ', str(time.time() - t1))
 
     loss_val = []
@@ -214,6 +215,8 @@ def train(epoch, best_val_loss):
             loss = loss_kt + loss_vae
             loss_val.append(loss)
             del loss
+            torch.cuda.empty_cache()
+
     print('Epoch: {:04d}'.format(epoch),
           'loss_train: {:.10f}'.format(np.mean(loss_train)),
           'kt_train: {:.10f}'.format(np.mean(kt_train)),

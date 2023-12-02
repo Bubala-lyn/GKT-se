@@ -138,7 +138,18 @@ class GKT(nn.Module):
         graphs, rec_embedding, z_prob = self.graph_model(concept_embedding, sp_send, sp_rec, sp_send_t, sp_rec_t)
         neigh_features = 0
         for k in range(self.edge_type_num):
-            adj = graphs[k][masked_qt, :].unsqueeze(dim=-1)  # [mask_num, concept_num, 1]
+
+            # 拿到masked_qt中每个qt对应的kc_id
+            mask_qt_kc = self.qt_kc_one_hot[masked_qt]
+            kc_id = torch.arange(self.concept_num).cuda() * mask_qt_kc
+            kc_id_non_zero = [row[row.nonzero(as_tuple=True)].long() for row in kc_id]
+            # 取出对应kc_id的加和平均
+            sublist = kc_id_non_zero[0]
+            adj = torch.mean(graphs[k][sublist, :].unsqueeze(dim=-1), dim=0).unsqueeze(dim=0)
+            for sublist in kc_id_non_zero[1:]:
+                adj_vec = torch.mean(graphs[k][sublist, :].unsqueeze(dim=-1), dim=0).unsqueeze(dim=0)
+                adj = torch.cat((adj_vec, adj), dim=0)
+
             if k == 0:
                 neigh_features = adj * self.f_neighbor_list[k](neigh_ht)
             else:
@@ -203,7 +214,7 @@ class GKT(nn.Module):
         y[qt_mask] = torch.sigmoid(y[qt_mask])  # [batch_size, concept_num]
         return y
 
-    def _get_next_pred(self, yt, q_next):
+    def _get_next_pred(self, yt, next_qt):
         r"""
         Parameters:
             yt: predicted correct probability of all concepts at the next timestamp
@@ -216,7 +227,6 @@ class GKT(nn.Module):
         Return:
             pred: predicted correct probability of the question answered at the next timestamp
         """
-        next_qt = q_next
         next_qt = torch.where(next_qt != -1, next_qt, 50 * torch.ones_like(next_qt, device=yt.device))
         one_hot_qt = F.embedding(next_qt.long(), self.qt_kc_one_hot.long())
         # dot product between yt and one_hot_qt
@@ -237,8 +247,6 @@ class GKT(nn.Module):
             rel_send: from nodes in edges which send messages to other nodes
             rel_rec:  to nodes in edges which receive messages from other nodes
         """
-        result = []
-        # mask_num = masked_qt.shape[0]
         mask_qt_kc = self.qt_kc_one_hot[masked_qt]
         kc_id = torch.arange(self.concept_num).cuda()
         mask_qt_kc_score = mask_qt_kc * kc_id
