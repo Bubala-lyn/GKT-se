@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torch.autograd import Variable
-from layers import MLP, EraseAddGate, MLPEncoder, MLPDecoder
+from layers import MLP, EraseAddGate, MLPEncoder, MLPDecoder, SELayer
 from utils import gumbel_softmax
 
 # Graph-based Knowledge Tracing: Modeling Student Proficiency Using Graph Neural Network.
@@ -37,7 +37,7 @@ class GKT(nn.Module):
         # one-hot feature and question
         one_hot_feat = torch.eye(self.concept_num)
         self.one_hot_feat = one_hot_feat.cuda() if self.has_cuda else one_hot_feat
-
+        self.se_layer = SELayer(channel=self.concept_num, reduction=4)
         # self.one_hot_q = torch.eye(self.concept_num, device=self.one_hot_feat.device)
         # zero_padding = torch.zeros(1, self.concept_num, device=self.one_hot_feat.device)
         # self.one_hot_q = torch.cat((self.one_hot_q, zero_padding), dim=0)
@@ -84,6 +84,7 @@ class GKT(nn.Module):
         # 补齐批次
         x_idx_mat = torch.arange(self.concept_num, device=xt.device)
         x_embedding = self.emb_x(x_idx_mat)  # [res_len * concept_num, embedding_dim]
+        x_embedding = self.se_layer(x_embedding)
         #
         masked_feat = F.embedding(qt[qt_mask], self.qt_kc_one_hot.long())  # [mask_num, res_len * concept_num]
 

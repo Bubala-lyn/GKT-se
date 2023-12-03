@@ -258,3 +258,32 @@ class MLPDecoder(nn.Module):
         pred = F.dropout(F.relu(self.out_fc2(pred)), self.dropout, training=self.training)  # [concept_num, hidden_dim]
         pred = self.out_fc3(pred)  # [concept_num, embedding_dim]
         return pred
+
+class SELayer(nn.Module):
+    def __init__(self, channel, reduction=16):
+        super(SELayer, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.fc1 = nn.Sequential(
+            nn.Linear(channel, channel // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channel // reduction, channel, bias=False),
+        )
+        self.fc2 = nn.Sequential(
+            nn.Linear(32, channel // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channel // reduction, 32, bias=False),
+        )
+        self.sigmoid = nn.Sigmoid()
+
+    # def forward(self, x):
+    #     # x = torch.randn([16, 59, 32]).cuda()
+    #     b, c, _ = x.size() # [59, 32]
+    #     y = self.avg_pool(x.unsqueeze(0)).view(b, c) #
+    #     y = self.fc(y).view(b, c, 1)
+    #     return x * y.expand_as(x)
+    def forward(self, x):
+        y = self.fc1(x.transpose(0, 1).unsqueeze(0)) # [1, 32, 59]
+        y = self.avg_pool(y) # [1, 32, 1]
+        y = self.fc2(y.transpose(1, 2)) # [1, 1, 32]
+        y = self.sigmoid(y).squeeze(0) # [1, 32]
+        return x * y.repeat(x.size(0), 1) # [59, 32]

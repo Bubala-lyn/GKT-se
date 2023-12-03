@@ -44,7 +44,7 @@ parser.add_argument('--no-factor', action='store_true', default=False, help='Dis
 parser.add_argument('--prior', action='store_true', default=False, help='Whether to use sparsity prior.')
 parser.add_argument('--var', type=float, default=1, help='Output variance.')
 parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train.')
-parser.add_argument('--batch-size', type=int, default=16, help='Number of samples per batch.')
+parser.add_argument('--batch-size', type=int, default=8, help='Number of samples per batch.')
 parser.add_argument('--train-ratio', type=float, default=0.6, help='The ratio of training samples in a dataset.')
 parser.add_argument('--val-ratio', type=float, default=0.2, help='The ratio of validation samples in a dataset.')
 parser.add_argument('--shuffle', type=bool, default=True, help='Whether to shuffle the dataset or not.')
